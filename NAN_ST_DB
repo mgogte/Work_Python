@@ -1,0 +1,132 @@
+#code for ST_DBSCAN with 2 dimensions - latitude and longitude
+
+import numpy 
+import time 
+from math import radians, cos, sin, asin, sqrt
+import re, math
+# for database operations
+import sys
+import MySQLdb
+import pandas.io.sql as psql
+import csv
+import pandas as pd
+
+def fetchData(res_id):
+#read from database into tuple
+	nanohub_metrics_cn = MySQLdb.connect(user = 'hub_read', 
+                                     passwd = 'N3nw3B', 
+                                     db='nanohub')
+
+	cursor = nanohub_metrics_cn.cursor()
+
+	cursor.execute("select  ig.ipLATITUDE, ig.ipLONGITUDE  ,dayofyear(amu.datetime),jra.parent_id                                                 \
+	from nanohub_metrics.andmore_usage amu,                                                                 \
+	nanohub_metrics.ip_geodata ig,                                                                          \
+	nanohub.jos_resource_assoc jra                                                                          \
+	where http_method = 'GET'                                                                               \
+	and amu.cms_action_name = jra.child_id                                                                  \
+	and ig.ip = amu.ip                                                                                      \
+	and http_return_code = 200                                                                              \
+	and amu.datetime>= \'2010-01-01\' and amu.datetime <= \'2010-12-31\'                                         \
+	and amu.cms_action_name in (select distinct jra.child_id \
+                                from nanohub.jos_resources jr, nanohub.jos_resource_assoc jra \
+                                where title like 'ECE 659%' \
+                                and jra.id = jr.id)    \
+	group by ig.ip;")
+
+	points = cursor.fetchall() #data type is tuple
+	return points
+
+def haversine(lon1, lat1, lon2, lat2):
+    """
+    Calculate the great circle distance between two points 
+    on the earth (specified in decimal degrees) returned as kilometers 
+    """
+    # convert decimal degrees to radians 
+    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+    # haversine formula 
+    dlon = lon2 - lon1 
+    dlat = lat2 - lat1 
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * asin(sqrt(a)) 
+    km = 6367 * c
+    return km
+
+
+
+def ST_DBSCAN(points,max_distance,MinPts):
+    global visited
+    visited = []
+    noise = []
+    c_neighbors = []
+    cluster_id = 0
+    clusters = []
+    in_cluster = []
+	
+    for p in points: 
+        if p not in visited:
+            # neighbor_points = []
+            visited.append(p)
+            NeighborPts = regionQuery(p,points,max_distance)
+            if len(NeighborPts) < MinPts:
+                noise.append(p)
+            else:
+                cluster_id = cluster_id + 1
+                g = expandCluster(p,NeighborPts,max_distance,MinPts,in_cluster,cluster_id)
+                clusters.append(g)
+                c_neighbors=NeighborPts+[cluster_id]
+    return clusters, c_neighbors
+
+#return len(NeighborPts)
+
+def expandCluster(p,NeighborPts,max_distance,MinPts,in_cluster,cluster_id):
+    in_cluster.append(p)
+    cluster = []
+    t_p = list(p) + [cluster_id]
+    cluster.append(t_p)
+    for point in NeighborPts:
+        if point not in visited:
+            visited.append(point)
+            new_neighbors = regionQuery(point,points,max_distance)
+            if len(new_neighbors) >= MinPts: 
+                new_neighbors.append(NeighborPts)
+            if point not in in_cluster:
+                 t_point = list(point) + [cluster_id]
+                 in_cluster.append(point)
+                 cluster.append(t_point)
+    return cluster
+
+
+def regionQuery(p,points,max_distance):
+    neighbor_points = []
+    for j in points:
+        if j != p:
+           # print 'P is %s and j is %s' % (p[0],j[0])
+            dist = haversine(p[0],p[1],j[0],j[1])
+            if dist <= max_distance:
+				if abs(p[2]-j[2]) < 10: #Eps2 is hardcoded as 10. To be changed later
+					neighbor_points.append(j)
+    neighbor_points.append(p) 
+    return neighbor_points   
+
+
+
+#print to a csv
+year = str(2010)
+res_id = 'ECE659'
+points = fetchData(res_id)
+cfile = '/home/nanohub/mugdha2608/Geolocation/GIS/'+year+'core' + res_id+'.csv'
+nfile = '/home/nanohub/mugdha2608/Geolocation/GIS/'+year+'neigh' + res_id+'.csv'
+corei,neighi = ST_DBSCAN(points,25,5)
+header = 'Latitude','Longitude','DayOfYear','Res_ID','Cluster_ID'
+with open(cfile, "w") as f:
+    writer = csv.write(f)
+    writer2 = csv.writer(f, delimiter ='\n')
+	#writer.writerows('\#consolidated ST_DBSCAN for 5229,5240,5460,5467,5469,5492,5544,5845,5864,5888,6052' )
+    writer.writerows(header)
+    writer2.writerows(corei)
+with open(nfile, "w") as n:
+    writer = csv.write(n)
+    writer2 = csv.writer(n, delimiter ='\n')
+    writer.writerows(header)
+    writer2.writerows(neighi)
